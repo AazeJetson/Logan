@@ -12,14 +12,139 @@ class visualization(object):
                                    [0,0,1,-8]])
         self.projection = self.K@self.extrinsic
         self.isOpened = True
-        self.keyboard = [0,0,0,0]
+        self.keyboard = [0,0,0,0,0,0]
         self.old_rotation = np.array([0,0,0])
         self.old_translation = np.array([0,-1,-8])
         self.coeffs_rotation = np.pi/200
         self.coeffs_translation = 1/100
         self.blank = np.ones((height, width, 3), dtype=np.uint8)*255
-        self.windows = cv2.namedWindow("img", cv2.WINDOW_KEEPRATIO)
-        cv2.setMouseCallback('img',self.callback)     
+        self.windows = cv2.namedWindow("img", cv2.WINDOW_FREERATIO)
+        cv2.setMouseCallback('img',self.callback)
+        self.polyhedre_draw_order = [[0,2],[0,3],[0,4],[0,5],[1,2],[1,3],[1,4],[1,5]]
+        self.axes_correspondance = {"x": [0,0,-90],
+                                    "-x": [0,0,90],
+                                    "y":[0,0,0],
+                                    "-y":[0,0,180],
+                                    "z":[90,0,0],
+                                    "-z":[-90,0,0]}
+        self.revoluteAxesCorrespondance= {"x": [0, True],
+                                          "-x": [0,False],
+                                          "y": [1,True],
+                                          "-y": [1,False],
+                                          "z": [2,True],
+                                          "-z": [2,False]}
+
+    def defineArm(self, nb_noeud, lengths=[], widths=[], types=[], limits=[], axes=[], axes_rot=[], colors=[]):
+        assert len(lengths) == nb_noeud, "Il manque des longueurs pour definir le robot"
+        assert len(widths) == nb_noeud, "Il manque des largeurs pour definir le robot"
+        assert len(colors) == nb_noeud, "Il manque des couleurs pour definir le robot"
+        self.nb_node = nb_noeud
+        self.lenghts = lengths
+        self.widths = widths
+        self.types = types
+        self.limits = limits
+        self.axes = axes
+        self.axes_rot = axes_rot
+        self.colors = colors
+
+    def grepRtMat(self, params):
+        Rts = {}
+        for i in range(self.nb_node):
+            if self.types[i] == "revolute":
+                if i == 0:
+                    lenght = np.array([0,0,0])
+                else:
+                    if "x" in self.axes[i-1]:
+                        if self.types[i-1] == "prismatic":
+                            lenght = np.array([self.lenghts[i-1]+params[i-1],0,0])
+                        else:
+                            lenght = np.array([self.lenghts[i-1],0,0])
+                    elif "y" in self.axes[i-1]:
+                        if self.types[i-1] == "prismatic":
+                            lenght = np.array([0,self.lenghts[i-1]+params[i-1],0])
+                        else:
+                            lenght = np.array([0,self.lenghts[i-1],0])
+                    elif "z" in self.axes[i-1]:
+                        if self.types[i-1] == "prismatic":
+                            lenght = np.array([0,0,self.lenghts[i-1]+params[i-1]])
+                        else:
+                            lenght = np.array([0,0,self.lenghts[i-1]])
+                correspondance = self.revoluteAxesCorrespondance[self.axes_rot[i]]
+                if correspondance[1]:
+                    rot_local = [0,0,0]
+                    rot_local[correspondance[0]] += params[i]
+                else:
+                    rot_local = [0,0,0]
+                    rot_local[correspondance[0]] += -params[i]
+                rmat = R.from_euler("xyz", rot_local, degrees=True).as_matrix()
+            else:
+                if i == 0:
+                    lenght = np.array([0,0,0])
+                else:
+                    if "x" in self.axes[i-1]:
+                        if self.types[i-1] == "prismatic":
+                            lenght = np.array([self.lenghts[i-1]+params[i-1],0,0])
+                        else:
+                            lenght = np.array([self.lenghts[i-1],0,0])
+                    elif "y" in self.axes[i-1]:
+                        if self.types[i-1] == "prismatic":
+                            lenght = np.array([0,self.lenghts[i-1]+params[i-1],0])
+                        else:
+                            lenght = np.array([0,self.lenghts[i-1],0])
+                    elif "z" in self.axes[i-1]:
+                        if self.types[i-1] == "prismatic":
+                            lenght = np.array([0,0,self.lenghts[i-1]+params[i-1]])
+                        else:
+                            lenght = np.array([0,0,self.lenghts[i-1]])
+                rmat = np.eye(3)
+            Rts[i] = np.eye(4)
+            Rts[i][:3,:3] = rmat
+            Rts[i][:3,3] = lenght
+            if i > 0:
+                Rts[i] = Rts[i-1]@Rts[i]
+        return Rts
+
+    def DrawArm(self, img, params):
+        Rts = self.grepRtMat(params)
+        for i in range(self.nb_node):
+            if self.types[i] == "revolute":
+                img = self.drawRevolute(img, Rts[i], self.lenghts[i], self.widths[i], self.axes[i], self.colors[i])
+            else:
+                img = self.drawPrismatic(img, Rts[i], self.lenghts[i], params[i], self.widths[i], self.axes[i], self.colors[i])
+        # print(Rts)
+        return img
+
+    def getPolyhedre(self, l, w, axe):
+        poly = np.expand_dims(np.array([[0,0,0],
+                         [0,l,0],
+                         [w,l/4,w],
+                         [w,l/4,-w],
+                         [-w,l/4,w],
+                         [-w,l/4,-w]]), axis=2)
+        Rt = np.eye(4)
+        Rt[:3,:3] = R.from_euler("xyz",self.axes_correspondance[axe], degrees=True).as_matrix()
+        poly = self.addOnes(poly)
+        poly = Rt@poly
+        return poly
+
+    def drawPolyhedre(self, img, Rt, poly, color):
+        poly = Rt@poly
+        poly[:,:3] /= poly[:,3:]
+        poly = poly[:,:3]
+        poly = np.squeeze(poly, axis=2)
+        for i in range(len(self.polyhedre_draw_order)):
+            self.Line(poly[self.polyhedre_draw_order[i][0]], poly[self.polyhedre_draw_order[i][1]], color, img, 1)
+        return img
+
+    def drawPrismatic(self, img, Rt, lenght, command_lenght, width, axe, color):
+        poly = self.getPolyhedre(lenght+command_lenght, width, axe)
+        img = self.drawPolyhedre(img, Rt, poly, color)
+        return img
+
+    def drawRevolute(self, img, Rt, lenght, width, axe, color):
+        poly = self.getPolyhedre(lenght, width, axe)
+        img = self.drawPolyhedre(img, Rt, poly, color)
+        return img
 
     @property
     def gauche(self):
@@ -36,6 +161,14 @@ class visualization(object):
     @property
     def bas(self):
         return True if self.keyboard[3] == 1 else False
+    
+    @property
+    def shift(self):
+        return True if self.keyboard[4] == 1 else False
+
+    @property
+    def ctrl(self):
+        return True if self.keyboard[5] == 1 else False
 
     def newProjectionMatrix(self, rot, trans, offsetTrans, trans_mod=False):
         self.extrinsic = np.zeros((3,4))
@@ -85,14 +218,19 @@ class visualization(object):
         pass
 
     def addOnes(self, pts):
-        if pts.shape[0] == 2:
+        if pts.shape[0] == 2 and len(pts.shape) <= 2:
             if len(pts.shape) == 1:
                 pts = np.expand_dims(pts, axis=1)
             pts = np.vstack([pts,np.ones((1,1))])
-        elif pts.shape[0] == 3:
+        elif pts.shape[0] == 3 and len(pts.shape) <= 2:
             if len(pts.shape) == 1:
                 pts = np.expand_dims(pts, axis=1)
             pts = np.vstack([pts,np.ones((1,1))])
+        else:
+            if len(pts.shape) == 3 and pts.shape[1] == 3:
+                pts = np.hstack([pts, np.ones((pts.shape[0],1,1))])
+            elif len(pts.shape) == 3 and pts.shape[1] == 2:
+                pts = np.hstack([pts, np.ones((pts.shape[0],1,1))])
         return pts
     
     def normalize(self, pts):
@@ -156,7 +294,7 @@ class visualization(object):
     def draw(self, img):
         cv2.imshow("img", img)
         key = cv2.waitKey(1)
-        self.keyboard = [0,0,0,0]
+        self.keyboard = [0,0,0,0,0,0]
         # if key != -1:
         #     print(key) 
         if key == ord("q") or key == 27:
@@ -169,20 +307,45 @@ class visualization(object):
             self.keyboard[2] = 1
         elif key == 84: # bas
             self.keyboard[3] = 1
+        elif key == 225: # shift
+            self.keyboard[4] = 1
+        elif key == 227: # ctrl
+            self.keyboard[5] = 1
 
 if __name__ == "__main__":
-    viz = visualization(640, 480)
+    viz = visualization(1027, 768)
     pts1 = np.array([0,0,0])
     pts2 = np.array([0,1,0])
+    
+    viz.defineArm(3, 
+                  lengths=[1,1,1],
+                  widths=[0.2,0.15,0.1],
+                  types=["revolute", "prismatic", "revolute"],
+                  limits=[[-90,90],
+                          [0.1,1.1],
+                          [-90,90]],
+                  axes=["y","x","x"],
+                  axes_rot=["y","x","z"],
+                  colors=[(255,0,0),(0,255,0),(0,0,255)])
+
+    theta1, delta2, theta3 = 0,0,0
     while viz.isOpened:
         if viz.gauche:
-            print("gauche")
+            theta1 += 10
+            print(theta1)
         elif viz.droite:
-            print("droite")
+            theta1 -= 10
+            print(theta1)
         elif viz.haut:
-            print("haut")
+            delta2 += 0.1
         elif viz.bas:
-            print("bas")
+            delta2 -= 0.1
+        elif viz.shift:
+            theta3 += 10
+            print(theta3)
+        elif viz.ctrl:
+            theta3 -= 10
+            print(theta3)
         img = viz.drawgrid()
-        img = viz.Line(pts1, pts2, img=img)
+        img = viz.DrawArm(img, [theta1,delta2,theta3])
         viz.draw(img)
